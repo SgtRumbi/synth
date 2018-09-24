@@ -26,75 +26,127 @@ typedef float f32;
 
 int main(int ArgCount, char **Args)
 {
-    snd_pcm_t *PCM;
-    int Error = snd_pcm_open(&PCM, "default", SND_PCM_STREAM_PLAYBACK, 0);
-    if(Error == 0)
+    if(ArgCount == 3)
     {
-        u32 Channels = 2;
-        u32 SamplesPerSecond = 44100;
-        snd_pcm_set_params(PCM, SND_PCM_FORMAT_FLOAT, SND_PCM_ACCESS_RW_INTERLEAVED, Channels, SamplesPerSecond, 1, 16667);
-        snd_pcm_uframes_t RingBufferSize;
-        snd_pcm_uframes_t PeriodSize;
-        snd_pcm_get_params(PCM, &RingBufferSize, &PeriodSize);
+        char *SoundDeviceName = Args[1];
+        char *MIDIDeviceName = Args[2];
         
-        int PollDescCount = snd_pcm_poll_descriptors_count(PCM);
-        pollfd *PollDescs = (pollfd *)malloc(PollDescCount * sizeof(pollfd));
-        snd_pcm_poll_descriptors(PCM, PollDescs, PollDescCount);
-        
-        fprintf(stdout, "PCM config:\n");
-        fprintf(stdout, "  Ring buffer size: %lu frames\n", RingBufferSize);
-        u32 SampleBufferSize = PeriodSize * Channels * sizeof(f32);
-        void *SampleBuffer = malloc(SampleBufferSize);
-        fprintf(stdout, "  Period size:      %lu frames / %u bytes\n", PeriodSize, SampleBufferSize);
-        fprintf(stdout, "  Poll desc. count: %d\n", PollDescCount);
-
-        f32 f = 100.0f;
-        u32 RunningSampleIndex = 0;
-        fprintf(stdout, "Entering main loop.\n");
-        for(;;)
+        snd_pcm_t *PCM;
+        int Error = snd_pcm_open(&PCM, SoundDeviceName, SND_PCM_STREAM_PLAYBACK, 0);
+        if(Error == 0)
         {
-            int EventDescs = poll(PollDescs, PollDescCount, -1);
-            if(EventDescs != -1)
+            u32 Channels = 2;
+            u32 SamplesPerSecond = 48000;
+            snd_pcm_set_params(PCM, SND_PCM_FORMAT_S16_LE,
+                               SND_PCM_ACCESS_RW_INTERLEAVED, Channels, SamplesPerSecond, 1, 16667);
+            snd_pcm_uframes_t RingBufferSize;
+            snd_pcm_uframes_t PeriodSize;
+            snd_pcm_get_params(PCM, &RingBufferSize, &PeriodSize);
+        
+            int PollDescCount = 1 + snd_pcm_poll_descriptors_count(PCM);
+            pollfd *PollDescs = (pollfd *)malloc(PollDescCount * sizeof(pollfd));
+            snd_pcm_poll_descriptors(PCM, PollDescs, PollDescCount - 1);
+        
+            fprintf(stdout, "PCM config:\n");
+            fprintf(stdout, "  Ring buffer size: %lu frames\n", RingBufferSize);
+            u32 SampleBufferSize = PeriodSize * Channels * sizeof(f32);
+            void *SampleBuffer = malloc(SampleBufferSize);
+            fprintf(stdout, "  Period size:      %lu frames / %u bytes\n", PeriodSize, SampleBufferSize);
+            fprintf(stdout, "  Poll desc. count: %d\n", PollDescCount);
+
+            int MIDIDeviceDesc = open(MIDIDeviceName, O_RDONLY);
+            if(MIDIDeviceDesc != -1)
             {
-                u16 Events;
-                snd_pcm_poll_descriptors_revents(PCM, PollDescs, PollDescCount, &Events);
-
-                if(!(Events & POLLOUT))
+                pollfd *PollMIDIDeviceDesc = PollDescs + PollDescCount - 1;
+                PollMIDIDeviceDesc->fd = MIDIDeviceDesc;
+                PollMIDIDeviceDesc->events = POLLIN;
+                PollMIDIDeviceDesc->revents = 0;
+            
+                f32 f = 0.0f;
+                u32 RunningSampleIndex = 0;
+                fprintf(stdout, "Entering main loop.\n");
+                for(;;)
                 {
-                    fprintf(stderr, "ERROR: Event is POLLOUT.\n");
-                }                        
+                    int PollResult = poll(PollDescs, PollDescCount, -1);
+                    if(PollResult > 0)
+                    {
+                        if(PollMIDIDeviceDesc->revents & POLLIN)
+                        {
+                            char unsigned Buffer[4];
+                            int ReadAmount = read(MIDIDeviceDesc, Buffer, 4);
 
-                f32 *SampleBufferPointer = (f32 *)SampleBuffer;
-                for(u32 SampleIndex = 0;
-                    SampleIndex < PeriodSize;
-                    ++SampleIndex)
-                {
-                    f32 Volume = 0.4f;
-                    f32 t = (f32)RunningSampleIndex / (f32)SamplesPerSecond;
-                    f32 SampleValue = Volume * sinf(f * t * 2.0f * Pi32);
-                    *SampleBufferPointer++ = SampleValue;
-                    *SampleBufferPointer++ = SampleValue;
+                            switch(Buffer[0])
+                            {
+                                case 0x90:
+                                {
+                                    s32 Note = ((s32)Buffer[1] - 69);
+                                    f = 440.0f * powf(2.0f, (f32)Note / 12.0f);
+                                    fprintf(stdout, "Note on\n");
+                                } break;
 
-                    ++RunningSampleIndex;
-                }
+                                case 0x80:
+                                {
+                                    f = 0.0f;
+                                    fprintf(stdout, "Note off\n");
+                                } break;
 
-                int Error = snd_pcm_writei(PCM, SampleBuffer, PeriodSize);
-                if(Error < 0)
-                {
-                    snd_pcm_recover(PCM, Error, 1);
+                                default:
+                                {
+                                    fprintf(stderr, "Unhandled command: %02x.\n", Buffer[0]);
+                                } break;
+                            }
+                        }
+
+                        u16 EventToHandle;
+                        snd_pcm_poll_descriptors_revents(PCM,
+                                                         PollDescs,
+                                                         PollDescCount - 1,
+                                                         &EventToHandle);
+                        if(EventToHandle & POLLOUT)
+                        {                        
+                            s16 *SampleBufferPointer = (s16 *)SampleBuffer;
+                            for(u32 SampleIndex = 0;
+                                SampleIndex < PeriodSize;
+                                ++SampleIndex)
+                            {
+                                f32 Volume = 0.4f;
+                                f32 t = (f32)RunningSampleIndex / (f32)SamplesPerSecond;
+                                s16 SampleValue = (s16)(32768.0f * (Volume * sinf(f * t * 2.0f * Pi32)));
+                                *SampleBufferPointer++ = SampleValue;
+                                *SampleBufferPointer++ = SampleValue;
+
+                                ++RunningSampleIndex;
+                                if(RunningSampleIndex > SamplesPerSecond)
+                                {
+                                    RunningSampleIndex = 0;
+                                }
+                            }
+
+                            int Error = snd_pcm_writei(PCM, SampleBuffer, PeriodSize);
+                            if(Error < 0)
+                            {
+                                snd_pcm_recover(PCM, Error, 1);
+                            }
+                        }
+                    }
                 }
             }
             else
             {
-                fprintf(stderr, "ERROR: Poll failed.\n");
+                fprintf(stderr, "ERROR: Failed to open MIDI device \"%s\".\n", MIDIDeviceName);
             }
+            
+            snd_pcm_close(PCM);
         }
-        
-        snd_pcm_close(PCM);
+        else
+        {
+            fprintf(stderr, "ERROR: Failed to open pcm handle.\n");
+        }
     }
     else
     {
-        fprintf(stderr, "ERROR: Failed to open pcm handle.\n");
+        fprintf(stdout, "Usage: %s <sound sink name> <midi device name>\n",
+                Args[0]);
     }
     
     return(0);

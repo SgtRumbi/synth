@@ -26,14 +26,62 @@ typedef float f32;
 
 int main(int ArgCount, char **Args)
 {
-    snd_rawmidi_t *MIDIInput;
-    int Error = snd_rawmidi_open(&MIDIInput, 0, "default", 0);
-    if(Error == 0)
+    if(ArgCount == 2)
     {
+#if 1
+        int MIDIDeviceDesc = open(Args[1], O_RDONLY);
+        if(MIDIDeviceDesc != -1)
+        {
+            pollfd PollMIDIDeviceDesc = {};
+            PollMIDIDeviceDesc.fd = MIDIDeviceDesc;
+            PollMIDIDeviceDesc.events = POLLIN;
+            PollMIDIDeviceDesc.revents = 0;
+            
+            for(;;)
+            {
+                int PollResult = poll(&PollMIDIDeviceDesc, 1, -1);
+                
+                if((PollResult > 0) &&
+                   (PollMIDIDeviceDesc.revents & POLLIN))
+                {
+                    char unsigned Buffer[4];
+                    int ReadAmount = read(MIDIDeviceDesc, Buffer, 4);
+
+                    printf("Message:\n");
+                    printf("  Raw: %02x %02x %02x %02x\n",
+                           Buffer[0], Buffer[1], Buffer[2], Buffer[3]);
+                    printf("  Key: %d\n",
+                           Buffer[1]);
+                }
+                else
+                {
+                    //printf("Update\n");
+                }
+            }
+            
+            close(MIDIDeviceDesc);
+        }
+        else
+        {
+            fprintf(stderr, "ERROR: Failed to open MIDI device.\n");
+        }    
+#else
+        snd_rawmidi_t *MIDIInput;
+        int Error = snd_rawmidi_open(&MIDIInput, 0, Args[1], 0);
+        if(Error == 0)
+        {
+            snd_rawmidi_nonblock(MIDIInput, 1);
+            snd_rawmidi_close(MIDIInput); 
+        }
+        else
+        {
+            fprintf(stderr, "ERROR: Failed to open MIDI device.\n");
+        }
+#endif
     }
     else
     {
-        fprintf(stderr, "ERROR: Failed to open MIDI device.\n");
+        fprintf(stdout, "Usage: %s <midi device name>\n", Args[0]);
     }
     
     return(0);
