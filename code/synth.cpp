@@ -6,6 +6,11 @@
    $Notice: (C) Copyright 2018. All Rights Reserved. $
    ======================================================================== */
 
+#define Maximum(A, B) (((A) > (B)) ? (A) : (B))
+#define Minimum(A, B) (((A) < (B)) ? (A) : (B))
+
+#define internal static
+
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
@@ -23,6 +28,127 @@ typedef int16_t s16;
 typedef uint8_t u8;
 typedef int8_t s8;
 typedef float f32;
+typedef u32 b32;
+
+struct midi_event
+{
+    union
+    {
+        struct
+        {
+            u8 Status_Channel;
+            u8 Data0;
+            u8 Data1;
+        };
+        u8 E[3];
+    };
+
+    midi_event *Next;
+};
+
+struct platform_input
+{
+    midi_event *FirstEvent;
+    midi_event *LastEvent;
+    midi_event *FirstFreeEvent;
+};
+
+struct voice
+{
+    f32 f;
+    b32 Active;
+    u32 SampleIndex;
+};
+
+internal f32
+Envelope(u32 SampleIndex)
+{
+    f32 Result;
+
+    u32 AttackTime = 24000 / 2;
+    if(SampleIndex < AttackTime)
+    {
+        Result = 1.0f / (f32)AttackTime * (f32)SampleIndex;
+    }
+    else
+    {
+        Result = Maximum(0.0f, 1.0f - 1.0f / (f32)AttackTime * (f32)(SampleIndex - AttackTime));
+    }
+
+    return(Result);
+}
+
+internal void
+Update(void *SampleBuffer, u32 SamplesToOutput, u32 SamplesPerSecond, platform_input *Input)
+{
+    static voice Voices[108 - 28] = {};
+    
+    for(midi_event *Event = Input->FirstEvent;
+        Event;
+        Event = Event->Next)
+    {
+        switch(Event->E[0])
+        {
+            case 0x90:
+            {
+                voice *Voice = Voices + Event->E[1] - 28;
+                
+                s32 Note = ((s32)Event->E[1] - 69);
+                Voice->f =
+                    440.0f * powf(2.0f, (f32)Note / 12.0f);
+                Voice->SampleIndex = 0;
+                Voice->Active = true;
+                fprintf(stdout, "Note on\n");
+            } break;
+
+            case 0x80:
+            {
+                voice *Voice = Voices + Event->E[1] - 28;
+
+                Voice->Active = false;
+                fprintf(stdout, "Note off\n");
+            } break;
+
+            default:
+            {
+                fprintf(stderr, "Unhandled command: %02x.\n", Event->E[0]);
+            } break;
+        }
+    }
+
+    if(Input->FirstEvent)
+    {
+        Input->LastEvent->Next = Input->FirstFreeEvent;
+        Input->FirstFreeEvent = Input->FirstEvent;
+        Input->FirstEvent = Input->LastEvent = 0;
+    }
+    
+    s16 *SampleBufferPointer = (s16 *)SampleBuffer;
+
+    for(u32 SampleIndex = 0;
+        SampleIndex < SamplesToOutput;
+        ++SampleIndex)
+    {
+        f32 Volume = 0.01f;
+        f32 SampleValueSum = 0.0f;
+
+        for(u32 VoiceIndex = 0;
+            VoiceIndex < (108 - 28);
+            ++VoiceIndex)
+        {
+            voice *Voice = Voices + VoiceIndex;
+
+            f32 t = (f32)Voice->SampleIndex / (f32)SamplesPerSecond;
+            SampleValueSum += (Volume * Envelope(Voice->SampleIndex) * sinf(Voice->f * t * 2.0f * Pi32));
+            
+            ++Voice->SampleIndex;
+        }
+        
+        s16 SampleValue16 = (s16)(32768.0f * SampleValueSum);
+        *SampleBufferPointer++ = SampleValue16;
+        *SampleBufferPointer++ = SampleValue16;
+    }
+}
 
 int main(int ArgCount, char **Args)
 {
@@ -61,7 +187,9 @@ int main(int ArgCount, char **Args)
                 PollMIDIDeviceDesc->fd = MIDIDeviceDesc;
                 PollMIDIDeviceDesc->events = POLLIN;
                 PollMIDIDeviceDesc->revents = 0;
-            
+
+                platform_input Input = {};
+                
                 f32 f = 0.0f;
                 u32 RunningSampleIndex = 0;
                 fprintf(stdout, "Entering main loop.\n");
@@ -72,28 +200,31 @@ int main(int ArgCount, char **Args)
                     {
                         if(PollMIDIDeviceDesc->revents & POLLIN)
                         {
-                            char unsigned Buffer[4];
+                            u8 Buffer[3];
                             int ReadAmount = read(MIDIDeviceDesc, Buffer, 4);
 
-                            switch(Buffer[0])
+                            midi_event *Event;
+                            if(Input.FirstFreeEvent)
                             {
-                                case 0x90:
-                                {
-                                    s32 Note = ((s32)Buffer[1] - 69);
-                                    f = 440.0f * powf(2.0f, (f32)Note / 12.0f);
-                                    fprintf(stdout, "Note on\n");
-                                } break;
+                                Event = Input.FirstFreeEvent;
+                                Input.FirstFreeEvent = Event->Next;
+                            }
+                            else
+                            {
+                                Event = (midi_event *)
+                                    malloc(sizeof(midi_event));
+                            }                       
+                                 
+                            memcpy(Event->E, Buffer, 3);
 
-                                case 0x80:
-                                {
-                                    f = 0.0f;
-                                    fprintf(stdout, "Note off\n");
-                                } break;
-
-                                default:
-                                {
-                                    fprintf(stderr, "Unhandled command: %02x.\n", Buffer[0]);
-                                } break;
+                            Event->Next = 0;
+                            if(Input.FirstEvent)
+                            {
+                                Input.LastEvent->Next = Event;
+                            }
+                            else
+                            {
+                                Input.FirstEvent = Input.LastEvent = Event;
                             }
                         }
 
@@ -104,24 +235,8 @@ int main(int ArgCount, char **Args)
                                                          &EventToHandle);
                         if(EventToHandle & POLLOUT)
                         {                        
-                            s16 *SampleBufferPointer = (s16 *)SampleBuffer;
-                            for(u32 SampleIndex = 0;
-                                SampleIndex < PeriodSize;
-                                ++SampleIndex)
-                            {
-                                f32 Volume = 0.4f;
-                                f32 t = (f32)RunningSampleIndex / (f32)SamplesPerSecond;
-                                s16 SampleValue = (s16)(32768.0f * (Volume * sinf(f * t * 2.0f * Pi32)));
-                                *SampleBufferPointer++ = SampleValue;
-                                *SampleBufferPointer++ = SampleValue;
-
-                                ++RunningSampleIndex;
-                                if(RunningSampleIndex > SamplesPerSecond)
-                                {
-                                    RunningSampleIndex = 0;
-                                }
-                            }
-
+                            Update(SampleBuffer, PeriodSize, SamplesPerSecond, &Input);
+                            
                             int Error = snd_pcm_writei(PCM, SampleBuffer, PeriodSize);
                             if(Error < 0)
                             {
