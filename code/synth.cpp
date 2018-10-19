@@ -78,6 +78,14 @@ Envelope(u32 SampleIndex)
     return(Result);
 }
 
+internal f32
+Oscillate(f32 t)
+{
+    f32 Result = ((sinf(t) > 0.0f) ? 1.0f : -1.0f);
+
+    return(Result);
+}
+
 internal void
 Update(void *SampleBuffer, u32 SamplesToOutput, u32 SamplesPerSecond, platform_input *Input)
 {
@@ -98,15 +106,16 @@ Update(void *SampleBuffer, u32 SamplesToOutput, u32 SamplesPerSecond, platform_i
                     440.0f * powf(2.0f, (f32)Note / 12.0f);
                 Voice->SampleIndex = 0;
                 Voice->Active = true;
-                fprintf(stdout, "Note on\n");
+                
+                fprintf(stdout, "Note #%don\n", Event->E[1]);
             } break;
 
             case 0x80:
             {
                 voice *Voice = Voices + Event->E[1] - 28;
-
                 Voice->Active = false;
-                fprintf(stdout, "Note off\n");
+                
+                fprintf(stdout, "Note #%d off\n", Event->E[1]);
             } break;
 
             default:
@@ -139,7 +148,7 @@ Update(void *SampleBuffer, u32 SamplesToOutput, u32 SamplesPerSecond, platform_i
             voice *Voice = Voices + VoiceIndex;
 
             f32 t = (f32)Voice->SampleIndex / (f32)SamplesPerSecond;
-            SampleValueSum += (Volume * Envelope(Voice->SampleIndex) * sinf(Voice->f * t * 2.0f * Pi32));
+            SampleValueSum += (Volume * Envelope(Voice->SampleIndex) * Oscillate(Voice->f * t * 2.0f * Pi32));
             
             ++Voice->SampleIndex;
         }
