@@ -9,7 +9,9 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
-#include <alsa/asoundlib.h>
+#include <fcntl.h>
+#include <sys/poll.h>
+//#include <alsa/asoundlib.h>
 #include <math.h>
 
 #define Pi32 M_PI

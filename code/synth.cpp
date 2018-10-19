@@ -30,29 +30,6 @@ typedef int8_t s8;
 typedef float f32;
 typedef u32 b32;
 
-struct midi_event
-{
-    union
-    {
-        struct
-        {
-            u8 Status_Channel;
-            u8 Data0;
-            u8 Data1;
-        };
-        u8 E[3];
-    };
-
-    midi_event *Next;
-};
-
-struct platform_input
-{
-    midi_event *FirstEvent;
-    midi_event *LastEvent;
-    midi_event *FirstFreeEvent;
-};
-
 struct voice
 {
     f32 f;
@@ -86,6 +63,29 @@ Oscillate(f32 t)
     return(Result);
 }
 
+struct midi_event
+{
+    union
+    {
+        struct
+        {
+            u8 Status_Channel;
+            u8 Data0;
+            u8 Data1;
+        };
+        u8 E[3];
+    };
+
+    midi_event *Next;
+};
+
+struct platform_input
+{
+    midi_event *FirstEvent;
+    midi_event *LastEvent;
+    midi_event *FirstFreeEvent;
+};
+
 internal void
 Update(void *SampleBuffer, u32 SamplesToOutput, u32 SamplesPerSecond, platform_input *Input)
 {
@@ -95,7 +95,7 @@ Update(void *SampleBuffer, u32 SamplesToOutput, u32 SamplesPerSecond, platform_i
         Event;
         Event = Event->Next)
     {
-        switch(Event->E[0])
+        switch(Event->E[0] & 0xF0)
         {
             case 0x90:
             {
@@ -107,7 +107,7 @@ Update(void *SampleBuffer, u32 SamplesToOutput, u32 SamplesPerSecond, platform_i
                 Voice->SampleIndex = 0;
                 Voice->Active = true;
                 
-                fprintf(stdout, "Note #%don\n", Event->E[1]);
+                fprintf(stdout, "Note #%d on\n", Event->E[1]);
             } break;
 
             case 0x80:
@@ -138,7 +138,7 @@ Update(void *SampleBuffer, u32 SamplesToOutput, u32 SamplesPerSecond, platform_i
         SampleIndex < SamplesToOutput;
         ++SampleIndex)
     {
-        f32 Volume = 0.01f;
+        f32 Volume = 0.1f;
         f32 SampleValueSum = 0.0f;
 
         for(u32 VoiceIndex = 0;
@@ -199,8 +199,6 @@ int main(int ArgCount, char **Args)
 
                 platform_input Input = {};
                 
-                f32 f = 0.0f;
-                u32 RunningSampleIndex = 0;
                 fprintf(stdout, "Entering main loop.\n");
                 for(;;)
                 {

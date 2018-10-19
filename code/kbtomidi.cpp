@@ -186,7 +186,7 @@ int main(int ArgCount, char **Args)
     }
     else
     {
-        fprintf(stdout, "Usage: %d <midi stream name>\n", Args[0]);
+        fprintf(stdout, "Usage: %s <midi stream name>\n", Args[0]);
     }
     
     return(0);
